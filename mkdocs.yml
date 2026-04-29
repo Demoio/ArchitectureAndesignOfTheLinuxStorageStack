@@ -19,3 +19,5 @@ nav:
       - 理解块层、块设备和数据结构: "Part2-1: 理解块层、块设备和数据结构.md"
       - 理解块层、多队列和Device Mapper: "Part2-2: 理解块层、多队列和Device Mapper.md"
       - 理解块层中的I/O处理与调度: "Part2-3: 理解块层中的I-O处理与调度.md"
+  - Part 3:
+      - SCSI 子系统: "Part3-1: SCSI 子系统.md"
