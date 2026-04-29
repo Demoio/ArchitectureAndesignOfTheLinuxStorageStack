@@ -1,0 +1,25 @@
+site_name: Linux Storage Stack 中文翻译
+site_description: Architecture and Design of the Linux Storage Stack 中文翻译文档
+site_url: !ENV [READTHEDOCS_CANONICAL_URL, ""]
+repo_url: https://github.com/Demoio/ArchitectureAndesignOfTheLinuxStorageStack
+theme:
+  name: mkdocs
+
+docs_dir: .
+
+exclude_docs: |
+  *.pdf
+  *.rs
+  .readthedocs.yaml
+  requirements-docs.txt
+
+nav:
+  - 首页: index.md
+  - 目录: 目录.md
+  - Part 1:
+      - 概览: "Part1-0:概览.md"
+      - 一切的开始--虚拟文件系统: "Part1-1: 一切的开始-- 虚拟文件系统.md"
+      - 虚拟文件系统的数据结构: "Part1-2: 虚拟文件系统的数据结构.md"
+      - 对实际的文件系统的探索: "Part1-3: 对实际的文件系统的探索.md"
+  - Part 2:
+      - 理解块层中的I/O处理与调度: "Part2-3: 理解块层中的I-O处理与调度.md"
