@@ -2,6 +2,10 @@
 
 深入了解Linux存储环境及其协调一致的层次结构
 
+## 在线阅读（Read the Docs）
+
+https://architectureandesignofthelinuxstoragestack.readthedocs.io/en/latest/
+
 Muhammad Umer
 
 ## Copyright © 2023 Packt Publishing
