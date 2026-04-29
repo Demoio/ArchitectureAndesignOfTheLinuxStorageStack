@@ -205,7 +205,7 @@ robocop@linuxbox:~$
 
 
 不难看出，第二种方法更紧凑且高效。现在，我们能够仅用四个块存储相同的四个文件，而不是第一个方法中的六个块。我们甚至能够节省 1 KB 的文件系统空间。显然，为单个文件分配一个完整的文件系统块似乎是一种低效的空间管理方法，但实际上，这是必要的权宜之计。
-![](image-21.png)
+![](image-23.png)
 从第一眼看，第二种方法似乎好得多，但你看出设计缺陷了吗？如果文件系统采用这种方法，可能会遇到重大的问题。如果文件系统设计为在单一块中容纳多个文件，它们需要设计一种机制来跟踪单个块内每个文件的边界。这会大大增加设计的复杂性。此外，这还会导致严重的碎片化，从而降低文件系统的性能。如果文件的大小增加，新增的数据将不得不调整到一个单独的块中。文件将存储在随机块中，没有顺序访问。所有这些都会导致文件系统性能差，并使这种紧凑方法的任何优势都变得毫无意义。因此，每个文件都占据一个完整的块，即使它的大小小于文件系统块的大小。
 
 
@@ -252,7 +252,7 @@ __Le32数据类型表明表示是小端顺序。从其在内核源中的定义�
 
 - 块集群：尽管在过去几年中磁盘驱动器的容量呈指数级增长，但Ext4文件系统的工作区块大小为几千字节。驱动器越大，区块的数量和开销就越大。作为变通办法，Ext4开发人员在Ext4中添加了块集群的功能。文件系统可以使用块组的概念在更大的组中分配块，而不是分配单个4 KB块。Ext4文件系统维护这些较大的块和4 KB块之间的映射。这个功能被称为bigalloc。块集群大小可以在文件系统创建时指定，并存储在s_log_cluster_size中。
 
-- 文件系统状态和检查：文件系统一致性检查可以在三种情况下触发。S_mnt_count字段表示自上次运行一致性检查以来文件系统被装载的次数。S_max_mnt_count字段对挂载数量施加硬限制，超过该限制必须进行一致性检查。文件系统状态保存在s_state中。它可以是以下情况之一：干净地卸载 检测到错误 正在恢复孤儿 如果s_state中的文件系统状态不干净，则会自动强制执行检查。上次一致性检查的日期保存在s_lastcheck中。如果s_checkinterval字段中指定的时间自上次检查以来已过，则在文件系统上强制执行一致性检查。
+- 文件系统状态和检查：文件系统一致性检查可以在三种情况下触发。`s_mnt_count` 字段表示自上次检查以来文件系统挂载次数，`s_max_mnt_count` 为强制检查的挂载上限。文件系统状态保存在 `s_state` 中，常见状态包括：干净卸载、检测到错误、正在恢复孤儿 inode。若状态非干净，会自动触发检查。上次检查时间在 `s_lastcheck` 中；如果距离上次检查已超过 `s_checkinterval` 设定的间隔，也会强制执行一致性检查。
 
 - 魔术签名：不同的文件系统使用在一定偏移处出现的魔术数字的概念。不同的工具使用这个数字来识别特定文件系统类型。超级块中的s_magic字段包含这个魔术数字。对于Ext4，其值为0xEF53。S_rev_level和s_minor_rev_level字段用于区分文件系统版本。
 
@@ -262,3 +262,233 @@ __Le32数据类型表明表示是小端顺序。从其在内核源中的定义�
 
 - 兼容功能：这两个值都是32位。S_feature_compat字段包含相容功能的32位位掩码。文件系统可以免费支持此字段中定义的功能。另一方面，如果内核不理解s_feature_incompat中定义的任何特征，文件系统挂载操作将无法成功。
 
+### 数据块位图和 inode 位图
+
+Ext4 文件系统只用很少的空间来组织内部结构，绝大部分空间还是用于存放用户数据。用户数据放在数据块中，而每个文件的元数据放在 inode 结构中。inode 也在磁盘上占用一块保留区域。由于 inode 在同一个文件系统内必须唯一，所以文件系统必须有一种机制来跟踪哪些 inode 已分配、哪些 inode 还空闲；数据块也是同样的问题。
+
+Ext4 使用位图（bitmap）来完成分配管理。位图本质上是一个 bit 序列。Ext4 分别使用 inode 位图和数据块位图来跟踪使用情况：
+
+- 数据块位图：跟踪某个块组里数据块的占用状态
+- inode 位图：跟踪 inode 表里每个 inode 条目的占用状态
+
+位值 `0` 表示可用，位值 `1` 表示已占用。
+
+inode 位图和数据块位图都各自占用 1 个块。因为 1 字节有 8 位，若块大小为默认的 4 KB，那么一个块位图最多可表示 `8 x 4 KB = 32,768` 个块（每组）。这个值可以通过 `mkfs` 或 `tune2fs` 的输出进行验证。
+
+### inode 表
+
+除了 inode 位图外，每个块组还包含 inode 表（inode table），它是一串连续的块。Ext4 inode 的结构定义在 `fs/ext4/ext4.h`：
+
+```c
+struct ext4_inode {
+        __le16  i_mode;         /* File mode */
+        __le16  i_uid;          /* Low 16 bits of Owner Uid */
+        __le32  i_size_lo;      /* Size in bytes */
+        __le32  i_atime;        /* Access time */
+        __le32  i_ctime;        /* Inode Change time */
+        __le32  i_mtime;        /* Modification time */
+        __le32  i_dtime;        /* Deletion Time */
+        __le16  i_gid;          /* Low 16 bits of Group Id */
+        __le16  i_links_count;  /* Links count */
+        __le32  i_blocks_lo;    /* Blocks count */
+        __le32  i_flags;        /* File flags */
+        [...]
+}
+```
+
+Ext4 inode 大小为 256 字节。几个重要字段如下：
+
+- 所有权：`i_uid` 和 `i_gid` 分别表示用户 ID 和组 ID。
+- 时间戳：`i_atime`、`i_ctime`、`i_mtime` 分别记录访问时间、inode 变更时间、数据修改时间；`i_dtime` 记录删除时间。这几个字段是 32 位有符号整数，表示自 Unix 纪元（1970-01-01 00:00:00 UTC）以来的秒数。需要亚秒精度时会用 `i_atime_extra`、`i_mtime_extra`、`i_ctime_extra`。
+- 硬链接计数：`i_links_count` 是 16 位值，因此 Ext4 单文件硬链接上限约为 65K。
+- 数据块指针：`i_block` 是长度为 `EXT4_N_BLOCKS` 的数组（值为 15）。前 12 个是直接指针；第 13、14、15 个是间接指针，分别提供一级、二级、三级间接寻址。
+
+### 组描述符（group descriptors）
+
+在文件系统布局中，组描述符位于超级块之后。每个块组都有一个组描述符，所以块组有多少个，组描述符就有多少个。它描述的是整个文件系统中每个块组的内容（不仅仅是本地块组）。`fs/ext4/ext4.h` 中定义如下：
+
+```c
+struct ext4_group_desc {
+        __le32  bg_block_bitmap_lo;      /* Blocks bitmap block */
+        __le32  bg_inode_bitmap_lo;      /* Inodes bitmap block */
+        __le32  bg_inode_table_lo;       /* Inodes table block */
+        __le16  bg_free_blocks_count_lo; /* Free blocks count */
+        __le16  bg_free_inodes_count_lo; /* Free inodes count */
+        __le16  bg_used_dirs_count_lo;   /* Directories count */
+        __le16  bg_flags;                /* EXT4_BG_flags ... */
+        [...]
+}
+```
+
+重点字段可以这样理解：
+
+- 位图位置：`bg_block_bitmap_*`、`bg_inode_bitmap_*`、`bg_inode_table_*` 记录块位图、inode 位图和 inode 表在磁盘上的位置（低位和高位分开保存）。
+- 资源使用：`bg_free_blocks_count_*`、`bg_free_inodes_count_*`、`bg_used_dirs_count_*` 记录空闲块、空闲 inode、目录数量。
+
+因为每个块组描述符都带有对全局块组的描述信息，所以从任意一个块组都能推断出下面这些信息：
+
+- 文件系统空闲块和空闲 inode 数量
+- inode 表位置
+- 块位图和 inode 位图位置
+
+### 预留 GDT 块
+
+Ext4 的一个实用能力是在线扩容（on-the-fly expansion）：在不中断业务的情况下扩大文件系统容量。为此，Ext4 在创建文件系统时就预留了 GDT（group descriptor table）块。扩容时新增磁盘空间会带来新的块组，也就需要更多组描述符，这些预留 GDT 块正是用于这个目的。
+
+### 日志模式（journaling modes）
+
+和多数文件系统一样，Ext4 也通过日志机制在系统崩溃时减少数据损坏和结构不一致。默认日志大小通常只有几 MB。Ext4 的日志依赖内核通用日志层 JBD/JBD2（journaling block device）。你在高负载系统上看 I/O 进程时，可能见过 `jbd2` 线程，它就是负责维护 Ext4 日志的内核线程。
+
+Ext4 支持三种日志模式：
+
+- Ordered：只记录元数据日志，数据直接落盘。顺序严格为“元数据写日志 -> 数据写盘 -> 元数据写盘”。崩溃时结构可保，但正在写的数据可能丢失。
+- Writeback：也只记录元数据日志，但数据和元数据写入顺序不强制，风险比 ordered 略高，但性能更好。
+- Journal：数据和元数据都先写日志再落盘，一致性最好，但写路径变成两次写，性能可能受影响。
+
+默认模式是 `ordered`。如果你想切换模式，需要先卸载文件系统，然后在 `/etc/fstab` 对应挂载项加参数。例如切到 writeback：
+
+```bash
+/dev/sdc on /mnt type ext4 (rw,relatime,data=writeback)
+```
+
+你也可以通过 `debugfs` 的 `logdump` 查看日志信息：
+
+```bash
+[root@linuxbox ~]# debugfs -R 'logdump -S' /dev/sdc
+debugfs 1.44.6 (5-Mar-2019)
+Journal features:           journal_64bit journal_checksum_v3
+Journal size:               32M
+Journal length:             8192
+Journal sequence:           0x00000005
+Journal start:              1
+Journal checksum type:      crc32c
+Journal checksum:           0xb78622f2
+...
+```
+
+### 文件区段（extents）
+
+前面提到过 inode 可用间接指针来寻址大文件，但当文件非常大时，指针数量和映射复杂度都会显著上升，元数据开销也会变大，进而拖慢部分操作。
+
+Ext4 通过 extents 改善这个问题。extent 可以理解为“起始块地址 + 连续块长度”。如果一段数据块是连续的，只需记录这段区间，而不是为每个块单独维护指针。比如使用 4 MB extent 存储 100 MB 文件，可分配 25 个连续区段，仅需跟踪每段边界。若使用传统指针法（按 4 KB 块），100 MB 大约需要映射 25,600 个块。
+
+### 块分配策略
+
+碎片化是文件系统性能的隐形杀手。Ext4 在块分配上做了多种优化，核心目标是把“相关数据尽量放在同一个块组”：
+
+- 新建文件时，尽量把 inode 分配到父目录所在块组
+- 文件数据尽量分配到其 inode 所在块组
+
+文件后续扩展时，Ext4 会从该文件最近一次分配块的位置开始搜索空闲块。
+
+Ext3 的分配器一次只分配一个 4 KB 块。假设文件是 100 MB，就需要调用分配器 25,600 次。并且扩容时拿到的新块可能离散，带来更多随机寻道和碎片。Ext4 的多块分配器（multi-block allocator）则可以一次分配多个块，减少分配开销并提升性能；文件真正使用这些块时，会按单个多块 extent 写入，没用完的额外块会释放。
+
+Ext4 还使用延迟分配（delayed allocation）：写请求发生时不立即分配磁盘块，而是先利用页缓存，等真正刷盘时再分配，从而更容易拿到连续块，减少碎片。
+
+### 查看 mkfs 的结果
+
+下面用一个 1 GB 磁盘执行 `mkfs.ext4 -v /dev/sdb` 的输出做总结：
+
+```bash
+[root@linuxbox ~]# mkfs.ext4 -v /dev/sdb
+mke2fs 1.44.6 (5-Mar-2019)
+fs_types for mke2fs.conf resolution: 'ext4'
+Discarding device blocks: done
+Filesystem label=
+OS type: Linux
+Block size=4096 (log=2)
+Fragment size=4096 (log=2)
+Stride=0 blocks, Stripe width=0 blocks
+65536 inodes, 262144 blocks
+13107 blocks (5.00%) reserved for the super user
+First data block=0
+Maximum filesystem blocks=268435456
+8 block groups
+32768 blocks per group, 32768 fragments per group
+8192 inodes per group
+Filesystem UUID: ebcfa024-f87b-4c52-b3e1-25f1d4d31fec
+Superblock backups stored on blocks:
+        32768, 98304, 163840, 229376
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (8192 blocks): done
+Writing superblocks and filesystem accounting information: done
+```
+
+关键信息解读：
+
+- `Discarding device blocks`（TRIM）对 SSD 特别有价值，通知设备可擦除未使用块。
+- 文件系统有 `262,144` 个 4 KB 块，共 `65,536` 个 inode。
+- 默认有 `5%` 空间保留给超级用户。
+- `8` 个块组，每组 `32,768` 块，每组 `8,192` inode，总 inode 数与输出一致。
+- 主超级块损坏时，可以用备份超级块恢复挂载。
+- 日志区 `8,192` 个块，按 4 KB 计算约 `32 MB`。
+
+总体上，Ext 系列是 Linux 平台最老牌的文件系统家族之一。Ext4 在可靠性、扩展性、性能上都经历了持续演进。像日志、extent、延迟分配等能力在 XFS 等文件系统中也有对应设计（实现细节不同）。作为 Linux 原生文件系统，Ext4 广泛实现并利用了 VFS 定义的通用结构，因此至今依然是发行版里最常见的文件系统之一。
+
+## 网络文件系统
+
+随着网络和协议的发展，远程文件共享成为可能，这推动了分布式计算和 C/S 架构的发展。核心思想是：把数据放在一个或多个中心服务器上，由多个客户端通过不同协议访问。常见协议包括 FTP、SFTP 等。
+
+与本地文件系统相比，分布式文件系统要多出一层网络通信逻辑。本地场景下，请求进程和存储资源在同一台机器上；而在分布式场景里，客户端程序收到诸如 `read()` 的调用后，需要把请求消息发给远端服务器，由服务器完成资源访问。
+
+最经典的实现之一是 NFS（Network Filesystem）。NFS 由 Sun Microsystems 于 1984 年提出，是典型的分布式文件系统协议，允许访问远程存储文件。当前常用的是 NFSv4。由于通信跨网络，客户端请求需要穿过 OSI 模型的各层。
+
+### NFS 架构
+
+从架构上看，NFS 有三个关键组成部分：
+
+- RPC（Remote Procedure Call）：NFS 客户端和服务端通过 RPC 通信。RPC 是 IPC 的扩展，调用过程可以位于远程地址空间（不必在本地进程地址空间）。
+- XDR（External Data Representation）：NFS 在 OSI 表示层用 XDR 编码二进制数据，解决异构系统（例如大小端不同）间的数据表示差异。
+- NFS Procedures：应用层定义了文件操作、目录操作、文件系统操作等具体过程。
+
+NFS 的 I/O 请求路径如下图所示：
+
+![](image-24.png)
+
+NFSv2 主要跑在 UDP 上，因此 v2/v3 偏无状态；v4 默认改为 TCP，更可靠，且是有状态协议，客户端和服务端会维护打开文件与锁信息。v4 还引入 compound request，可把多个操作合并为一次 RPC 请求。
+
+和本地文件系统一样，NFS 也需要挂载后才能使用，但与本地不同的是：NFS 不需要在客户端新建文件系统，因为远端已经存在。挂载命令里指定的是服务端导出的目录（export）。NFS 服务端维护可导出的文件系统列表以及允许访问这些导出的主机列表。
+
+NFS 通过 file handle 唯一标识文件，通常包含 inode 编号、文件系统标识和 generation number（代数）。代数用于处理 inode 复用场景，避免“旧文件 A 删除后，新文件 B 复用了同 inode 编号导致误识别”的问题。
+
+### 与块文件系统的比较
+
+网络文件系统也叫文件级存储（file-level storage）。因此 NFS 上的 I/O 属于文件级 I/O，请求中通常不直接指定磁盘块地址；文件在磁盘上的真实位置管理由 NFS 服务端负责。服务端收到请求后，会转换为底层块级请求再执行。
+
+这带来了额外开销，也是 NFS 性能通常不如本地块文件系统的主要原因之一。本地块存储场景下，应用对块访问和修改策略有更高控制力；而 NFS 中，文件系统结构的管理由服务端统一承担。
+
+NFS 与块文件系统在数据路径上的差异如下：
+
+![](image-25.png)
+
+总结来说，NFS 仍然是企业里最常见的远程共享协议之一。尽管性能通常落后于本地块存储，但在备份、归档、共享数据等场景依然非常实用。
+
+## FUSE：一种在用户态实现文件系统的方法
+
+我们前面讲过，系统资源和内核代码（包含文件系统代码）位于内核空间，普通用户态程序不能直接改动内核代码。这种隔离保障了系统安全，但也带来开发和调试成本：一旦文件系统代码出 bug，排查难度很高，很多操作还必须以 root 执行。
+
+FUSE（Filesystem in Userspace）就是为缓解这些问题设计的。它允许你在用户态实现文件系统逻辑，而不需要直接修改内核文件系统代码。这样一来，文件系统的数据和元数据都可以由用户态进程管理，非特权用户也能挂载 FUSE 文件系统，灵活性很高。
+
+另外，FUSE 文件系统可以是可堆叠（stackable）的，也就是部署在 Ext4/XFS 之类现有文件系统之上。GlusterFS 就是典型例子之一：它运行在用户态，并可叠加在现有块文件系统之上。
+
+FUSE 的实现由两部分组成：
+
+- 内核模块 `fuse.ko`：向 VFS 注册 FUSE 文件系统
+- 用户态守护进程（基于 `libfuse`）：通过字符设备 `/dev/fuse` 与内核模块通信
+
+数据流如下图：
+
+![](image-26.png)
+
+当用户进程访问 FUSE 文件系统时，系统调用先到 VFS。VFS 识别为 FUSE 后，会转给 `fuse.ko`。FUSE 驱动构造请求并放入 `/dev/fuse` 队列，再由用户态守护进程读取和处理。如果该 FUSE 文件系统是堆叠在别的文件系统之上，处理后的请求还会再次回到内核路径并继续下发到底层文件系统。
+
+FUSE 在健壮性上通常不如传统内核态文件系统，但它的部署和开发效率非常高。更重要的是，文件系统代码在用户态，即使有 bug 也不会直接拖垮内核。
+
+## 总结
+
+前两章重点解释了 VFS 的工作机制，而本章把视角下沉到了 VFS 之下的实际文件系统。Linux 内核可支持的文件系统非常多，不可能逐一覆盖，所以我们重点讲了 Linux 原生文件系统以及几类通用机制，包括日志、CoW、FUSE。
+
+本章的核心是 Ext 文件系统家族，尤其是 Ext4 的内部设计。Ext 系列从早期内核版本一路演化到今天，仍是最广泛部署的 Linux 文件系统之一。我们也讨论了 NFS 的架构和文件级存储与块级存储的区别，最后介绍了 FUSE 这种“用户态导出文件系统到内核”的方式。
+
+到这里，VFS 与文件系统层的内容就告一段落，Part 1 也完成了。接下来的内容会进入内核块层（Block Layer），也就是文件系统之下、设备驱动之上的那一层。
