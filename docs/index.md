@@ -13,3 +13,4 @@
 - [Part2-2: 理解块层、多队列和Device Mapper](Part2-2:%20理解块层、多队列和Device%20Mapper.md)
 - [Part2-3: 理解块层中的I-O处理与调度](Part2-3:%20理解块层中的I-O处理与调度.md)
 - [Part3-1: SCSI 子系统](Part3-1:%20SCSI%20子系统.md)
+- [Part3-2: 物理介质布局](Part3-2:%20物理介质布局.md)
